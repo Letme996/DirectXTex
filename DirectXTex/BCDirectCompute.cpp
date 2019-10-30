@@ -7,7 +7,7 @@
 // Licensed under the MIT License.
 //-------------------------------------------------------------------------------------
 
-#include "directxtexp.h"
+#include "DirectXTexP.h"
 
 #include "BCDirectCompute.h"
 
@@ -45,44 +45,46 @@ namespace
         UINT    reserved;
     };
 
-    static_assert( sizeof(ConstantsBC6HBC7) == sizeof(UINT)*8, "Constant buffer size mismatch" );
+    static_assert(sizeof(ConstantsBC6HBC7) == sizeof(UINT) * 8, "Constant buffer size mismatch");
 
-    inline void RunComputeShader( ID3D11DeviceContext* pContext,
-                                  ID3D11ComputeShader* shader,
-                                  ID3D11ShaderResourceView** pSRVs, 
-                                  UINT srvCount,
-                                  ID3D11Buffer* pCB, 
-                                  ID3D11UnorderedAccessView* pUAV,
-                                  UINT X )
+    inline void RunComputeShader(ID3D11DeviceContext* pContext,
+        ID3D11ComputeShader* shader,
+        ID3D11ShaderResourceView** pSRVs,
+        UINT srvCount,
+        ID3D11Buffer* pCB,
+        ID3D11UnorderedAccessView* pUAV,
+        UINT X)
     {
         // Force UAV to nullptr before setting SRV since we are swapping buffers
         ID3D11UnorderedAccessView* nullUAV = nullptr;
-        pContext->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
+        pContext->CSSetUnorderedAccessViews(0, 1, &nullUAV, nullptr);
 
-        pContext->CSSetShader( shader, nullptr, 0 );
-        pContext->CSSetShaderResources( 0, srvCount, pSRVs );
-        pContext->CSSetUnorderedAccessViews( 0, 1, &pUAV, nullptr );
-        pContext->CSSetConstantBuffers( 0, 1, &pCB );
-        pContext->Dispatch( X, 1, 1 );
+        pContext->CSSetShader(shader, nullptr, 0);
+        pContext->CSSetShaderResources(0, srvCount, pSRVs);
+        pContext->CSSetUnorderedAccessViews(0, 1, &pUAV, nullptr);
+        pContext->CSSetConstantBuffers(0, 1, &pCB);
+        pContext->Dispatch(X, 1, 1);
     }
 
-    inline void ResetContext( ID3D11DeviceContext* pContext )
+    inline void ResetContext(ID3D11DeviceContext* pContext)
     {
         ID3D11UnorderedAccessView* nullUAV = nullptr;
-        pContext->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
+        pContext->CSSetUnorderedAccessViews(0, 1, &nullUAV, nullptr);
 
         ID3D11ShaderResourceView* nullSRV[3] = { nullptr, nullptr, nullptr };
-        pContext->CSSetShaderResources( 0, 3, nullSRV );
+        pContext->CSSetShaderResources(0, 3, nullSRV);
 
         ID3D11Buffer* nullBuffer[1] = { nullptr };
-        pContext->CSSetConstantBuffers( 0, 1, nullBuffer );
+        pContext->CSSetConstantBuffers(0, 1, nullBuffer);
     }
 };
 
-GPUCompressBC::GPUCompressBC() :
+GPUCompressBC::GPUCompressBC() noexcept :
     m_bcformat(DXGI_FORMAT_UNKNOWN),
     m_srcformat(DXGI_FORMAT_UNKNOWN),
     m_alphaWeight(1.f),
+    m_bc7_mode02(false),
+    m_bc7_mode137(false),
     m_width(0),
     m_height(0)
 {
@@ -230,7 +232,12 @@ HRESULT GPUCompressBC::Prepare(size_t width, size_t height, DWORD flags, DXGI_FO
         return E_POINTER;
 
     // Create structured buffers
-    size_t bufferSize = num_blocks * sizeof(BufferBC6HBC7);
+    uint64_t sizeInBytes = uint64_t(num_blocks) * sizeof(BufferBC6HBC7);
+    if (sizeInBytes >= UINT32_MAX)
+        return HRESULT_FROM_WIN32(ERROR_ARITHMETIC_OVERFLOW);
+
+    auto bufferSize = static_cast<size_t>(sizeInBytes);
+
     {
         D3D11_BUFFER_DESC desc = {};
         desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
@@ -425,9 +432,9 @@ HRESULT GPUCompressBC::Compress(const Image& srcImage, const Image& destImage)
     size_t xblocks = std::max<size_t>(1, (m_width + 3) >> 2);
     size_t yblocks = std::max<size_t>(1, (m_height + 3) >> 2);
 
-    UINT num_total_blocks = static_cast<UINT>(xblocks * yblocks);
+    auto num_total_blocks = static_cast<UINT>(xblocks * yblocks);
     UINT num_blocks = num_total_blocks;
-    int start_block_id = 0;
+    UINT start_block_id = 0;
     while (num_blocks > 0)
     {
         UINT n = std::min<UINT>(num_blocks, MAX_BLOCK_BATCH);
@@ -442,7 +449,7 @@ HRESULT GPUCompressBC::Compress(const Image& srcImage, const Image& destImage)
             ConstantsBC6HBC7 param;
             param.tex_width = static_cast<UINT>(srcImage.width);
             param.num_block_x = static_cast<UINT>(xblocks);
-            param.format = m_bcformat;
+            param.format = static_cast<UINT>(m_bcformat);
             param.mode_id = 0;
             param.start_block_id = start_block_id;
             param.num_total_blocks = num_total_blocks;
@@ -480,7 +487,7 @@ HRESULT GPUCompressBC::Compress(const Image& srcImage, const Image& destImage)
                         ConstantsBC6HBC7 param;
                         param.tex_width = static_cast<UINT>(srcImage.width);
                         param.num_block_x = static_cast<UINT>(xblocks);
-                        param.format = m_bcformat;
+                        param.format = static_cast<UINT>(m_bcformat);
                         param.mode_id = modes[i];
                         param.start_block_id = start_block_id;
                         param.num_total_blocks = num_total_blocks;
@@ -515,7 +522,7 @@ HRESULT GPUCompressBC::Compress(const Image& srcImage, const Image& destImage)
                         ConstantsBC6HBC7 param;
                         param.tex_width = static_cast<UINT>(srcImage.width);
                         param.num_block_x = static_cast<UINT>(xblocks);
-                        param.format = m_bcformat;
+                        param.format = static_cast<UINT>(m_bcformat);
                         param.mode_id = modes[i];
                         param.start_block_id = start_block_id;
                         param.num_total_blocks = num_total_blocks;
@@ -555,7 +562,7 @@ HRESULT GPUCompressBC::Compress(const Image& srcImage, const Image& destImage)
                     ConstantsBC6HBC7 param;
                     param.tex_width = static_cast<UINT>(srcImage.width);
                     param.num_block_x = static_cast<UINT>(xblocks);
-                    param.format = m_bcformat;
+                    param.format = static_cast<UINT>(m_bcformat);
                     param.mode_id = i;
                     param.start_block_id = start_block_id;
                     param.num_total_blocks = num_total_blocks;
@@ -587,7 +594,7 @@ HRESULT GPUCompressBC::Compress(const Image& srcImage, const Image& destImage)
     HRESULT hr = pContext->Map(m_outputCPU.Get(), 0, D3D11_MAP_READ, 0, &mapped);
     if (SUCCEEDED(hr))
     {
-        const uint8_t *pSrc = reinterpret_cast<const uint8_t *>(mapped.pData);
+        auto pSrc = static_cast<const uint8_t *>(mapped.pData);
         uint8_t *pDest = destImage.pixels;
 
         size_t pitch = xblocks * sizeof(BufferBC6HBC7);
